@@ -87,8 +87,29 @@ _WARM_COLS = ("txn_id", "t", "ts", "from_bank", "to_bank", "fmt", "cur_paid", "c
               "amount_usd", "src", "dst")
 
 
-def _warm_worker(dataset, t_live, interval_s, threads, inbox, outbox):
+def _exit_with_parent(parent_pid: int, every_s: float = 1.0):
+    """Exit this worker as soon as the enclave process that spawned it is gone.
+
+    ``daemon=True`` only covers a clean interpreter shutdown of the parent; a parent killed by
+    a signal leaves the worker orphaned (re-parented to init/launchd) and still holding the
+    graph in memory. Started before priming, so it covers that phase too.
+    """
+    import os
+
+    def watch():
+        while True:
+            time.sleep(every_s)
+            if os.getppid() != parent_pid:
+                os._exit(0)
+
+    threading.Thread(target=watch, daemon=True, name="parent-watch").start()
+
+
+def _warm_worker(dataset, t_live, interval_s, threads, inbox, outbox, parent_pid=None):
     import queue as _q
+
+    if parent_pid is not None:
+        _exit_with_parent(parent_pid)
 
     from ..demo_setup import load_bundle
     from ..experiment import enclave_key
@@ -140,11 +161,13 @@ class WarmProcess:
 
     def __init__(self, engine, dataset: str, t_live: int, interval_s: float = 3.0, threads: int = 4):
         import multiprocessing as mp
+        import os
         ctx = mp.get_context("spawn")
         self.engine = engine
         self.inbox, self.outbox = ctx.Queue(), ctx.Queue()
         self.proc = ctx.Process(target=_warm_worker, daemon=True, name="warm-tier",
-                                args=(dataset, t_live, interval_s, threads, self.inbox, self.outbox))
+                                args=(dataset, t_live, interval_s, threads, self.inbox, self.outbox,
+                                      os.getpid()))
         self._summary = {"runs": 0, "rescored": 0, "escalated": 0, "interval_s": interval_s,
                          "mode": "process"}
         self._thread = None

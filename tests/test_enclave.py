@@ -158,3 +158,42 @@ def test_model_hot_swap(raw_df, pseudo_df, bundles):
         raise AssertionError("swap with different graph features must fail")
     except ValueError:
         pass
+
+
+def _orphan_probe(parent_pid, out):
+    """Child of a short-lived parent: arms the watchdog, then reports its pid and waits."""
+    import os
+    import time
+    from freezeframe.enclave.warm import _exit_with_parent
+    _exit_with_parent(parent_pid, every_s=0.2)
+    out.put(os.getpid())
+    time.sleep(60)
+
+
+def _spawn_probe_then_die(out):
+    import multiprocessing as mp
+    import os
+    p = mp.get_context("spawn").Process(target=_orphan_probe, args=(os.getpid(), out))
+    p.start()
+    os._exit(0)          # die abruptly, like a killed server: no cleanup of children
+
+
+def test_warm_worker_exits_when_parent_dies():
+    import multiprocessing as mp
+    import os
+    import time
+    ctx = mp.get_context("spawn")
+    out = ctx.Queue()
+    parent = ctx.Process(target=_spawn_probe_then_die, args=(out,))
+    parent.start()
+    child = out.get(timeout=60)
+    parent.join(timeout=10)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.2)
+    os.kill(child, 9)
+    raise AssertionError("orphaned worker kept running after its parent died")
