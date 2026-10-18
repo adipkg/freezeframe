@@ -10,6 +10,7 @@ Run:  arch -x86_64 .venv/bin/python -m demo.app   then open http://localhost:800
 import asyncio
 import json
 import os
+import platform
 import time
 from pathlib import Path
 
@@ -35,7 +36,8 @@ LIVE_SPEED = float(os.environ.get("FF_LIVE_SPEED", 40))   # x real time while li
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI(title="FreezeFrame demo")
-S: dict = {"subscribers": set(), "playing": False}
+S: dict = {"subscribers": set(), "playing": False, "played": False, "history": []}
+REPLAYED = {"hop", "skip", "live", "notice", "play", "done"}   # sent again to a page that connects late
 
 
 def _predictions(kind):
@@ -87,7 +89,10 @@ async def startup():
     consumer = HotConsumer(engine, bus, keys, {m: b.keys.public_b64 for m, b in banks.items()})
     S.update(engine=engine, warm=warm, keys=keys, bus=bus, banks=banks, consumer=consumer,
              ctx=ctx, chain=chain, cand=cand, bm=bm, tog=tog, alo=alo,
-             chain_refs={str(t): i for i, t in enumerate(chain.txn_id)})
+             chain_refs={str(t): i for i, t in enumerate(chain.txn_id)},
+             chain_to={})
+    for i, r in enumerate(chain.itertuples()):
+        S["chain_to"].setdefault((str(r.to_bank), r.to_acct), []).append((i, float(r.amount_usd)))
     asyncio.create_task(consumer.run())
     for b in banks.values():
         asyncio.create_task(b.run_flusher(asyncio.Event()))
@@ -97,6 +102,8 @@ async def startup():
 
 
 def broadcast(ev: dict):
+    if ev["type"] in REPLAYED:
+        S["history"].append(ev)
     for q in list(S["subscribers"]):
         q.put_nowait(ev)
 
@@ -117,9 +124,11 @@ async def bank_listener(m):
         if note is not None:
             got = True
             for n in bank.open(note):
-                chain_accts = set(S["chain"].to_acct)
-                if n["to_acct"] in chain_accts:
-                    broadcast({"type": "notice", "member": m, "kind": n["kind"],
+                # bank m was told to act on one of its own accounts; tie it to the chain hop
+                cands = S["chain_to"].get((n["to_bank"], n["to_acct"]), [])
+                hop = min(cands, key=lambda c: abs(c[1] - n["amount_usd"]))[0] if cands else None
+                if hop is not None:
+                    broadcast({"type": "notice", "hop": hop, "member": m, "kind": n["kind"],
                                "to_acct": n["to_acct"][-4:], "amount_usd": n["amount_usd"]})
         if not got:
             await asyncio.sleep(0.02)
@@ -214,6 +223,7 @@ def api_chain():
                      "currency": str(r.cur_paid), "fmt": str(r.fmt),
                      "together": S["tog"][i], "alone": S["alo"][i]})
     return {"pattern": S["cand"]["pattern"], "span_hours": S["cand"]["span_hours"], "hops": hops,
+            "played": S["played"],
             "attestation": attestation_status(), "tree_format": S["engine"].scorer.tree_format}
 
 
@@ -226,7 +236,15 @@ def api_results():
     seeds = r.get("seeds", {})
     s0 = seeds.get("0") or (next(iter(seeds.values())) if seeds else None)
     pct = lambda d: d["laundered_usd_stopped"] / max(d["laundered_usd"], 1)
+    dec_path = config.RESULTS_DIR / DATASET / f"decisions_{TIER}_{MODEL}.json"
+    lat_path = config.RESULTS_DIR / DATASET / f"latency_inprocess_{platform.machine()}.json"
+    latency = []
+    if lat_path.exists():
+        latency = [{"speed": x["speed"], "rate": x["achieved_rate_per_s"], "p50": x["e2e_ms"]["p50"],
+                    "p99": x["e2e_ms"]["p99"]} for x in json.loads(lat_path.read_text())["runs"]]
     return {
+        "decisions": json.loads(dec_path.read_text()) if dec_path.exists() else None,
+        "latency": latency,
         "together_f1": r["together_overall"]["f1"],
         "together_usd": pct(r["together_overall"]),
         "alone_f1_by_seed": {k: v["alone_overall"]["f1"] for k, v in seeds.items()},
@@ -239,14 +257,19 @@ def api_results():
 
 @app.post("/api/play")
 async def api_play():
-    if not S["playing"]:
-        asyncio.create_task(play())
+    # One replay per server start: a second one would feed the same payments into the graph again.
+    if S["played"]:
+        return {"ok": False, "reason": "already played; restart the server to replay"}
+    S["played"] = True
+    asyncio.create_task(play())
     return {"ok": True}
 
 
 @app.get("/api/stream")
 async def api_stream():
     q: asyncio.Queue = asyncio.Queue()
+    for ev in S["history"]:
+        q.put_nowait(ev)
     S["subscribers"].add(q)
 
     async def gen():
