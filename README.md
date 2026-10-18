@@ -116,8 +116,36 @@ done
 $PY -m pytest                                # 22 tests (the Kafka test needs FF_KAFKA=host:port)
 ./scripts/run_experiments.sh HI-Small        # alone vs together + live-path model (~1 h)
 $PY -m bench.latency --speeds 1 100 1000     # streaming latency
-$PY -m demo.app                              # http://localhost:8000, press Play
+$PY -m demo.app                              # live dashboard on http://localhost:8000 (PORT=… to change)
 ```
+
+## Live demo dashboard
+
+`demo/app.py` replays a real laundering attempt through the running system. It's an 8-payment cycle from the test split that crosses all five banks. The payments go through sealed bank clients, the enclave's hot path, and the warm tier. Startup takes about 2–3 minutes while the enclave loads the graph; then open the page and press **Play**. The replay takes about a minute.
+
+The page reads top to bottom:
+
+1. **Headline results:** F1 for each bank alone vs together, and laundering payments frozen automatically, both from `results/`.
+2. **The money's route:** the accounts in the order the money moved, coloured by bank, with the last payment returning to the first account. Below it is a timeline whose cursor follows the payment being replayed.
+3. **Alone vs together, one row per payment.** Each row reads across:
+   - on the left, what the paying bank decides with only its own view (from the experiment's models)
+   - in the middle, the payment itself
+   - on the right, the live enclave decision as it arrives, with its reason, and any freeze or hold notice sent to the receiving bank
+
+   A payment held only because its money came from an already-flagged payment is labelled "held at the next hop".
+4. **F1 by bank** and the **streaming benchmark** table.
+5. **Live console** pinned to the bottom: payments per second, p50 and p99 decision latency, payments scored, holds, freeze requests, next-hop holds, and warm-tier escalations.
+
+How to read it honestly:
+
+- **Each hop is replayed live,** at 40× real time, starting a few minutes before the payment. The hours between hops are *fast-forwarded*: those payments are loaded into the graph, so its windows stay correct, but they aren't scored or shown. Each skip appears as a divider between the two payments it separates, with its length and payment count.
+- **Labels:** "enclave: simulated" and "scoring: CPU" stay on screen unless the server runs under Secure Execution or on the IBM Z AI accelerator.
+- **Each bank only sees its own decisions.** The page is the demo operator's merged view of those per-bank topics.
+- **One replay per server start.** A second one would feed the same payments into the graph again, so restart the server to replay. Refreshing the page catches up on a replay in progress.
+
+Keys: **Space** plays; **← →** steps through decided payments and highlights them on the route; **Esc** returns to live.
+
+`prototypes/` holds the six design directions explored for this page. They're standalone, play a recorded run, and are browsable from `prototypes/index.html`. The dashboard is prototype 06, "Story × Split".
 
 ## How it works
 
@@ -144,7 +172,8 @@ bank client ──seal(payment, enclave key)──▶ payments.in  (one partitio
 | Alone-vs-together experiment | `freezeframe/experiment.py` |
 | Enclave engine, warm tier, transports, HTTP API, crypto | `freezeframe/enclave/` |
 | Streaming latency benchmark | `bench/latency.py` |
-| Live demo dashboard | `demo/` |
+| Live demo dashboard (server, page) | `demo/app.py`, `demo/static/index.html` |
+| Dashboard design prototypes | `prototypes/` |
 | LinuxONE steps, Dockerfile | `deploy/` |
 
 ### Decisions
