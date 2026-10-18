@@ -1,0 +1,167 @@
+# FreezeFrame
+
+**Catching scam money across banks without sharing customer data.** This is an IBM Z Datathon 2026 entry, in the track "AI Secured: Innovation Without Exposure".
+
+Scam money hops through chains of money mules across several banks within minutes. Each bank sees only its own slice of the chain. In FreezeFrame, each bank streams its own payments, encrypted, into a shared enclave on IBM LinuxONE:
+
+1. Account numbers become keyed pseudonyms before any processing.
+2. IBM's Graph Feature Preprocessor mines fan-in, fan-out, cycle, and scatter-gather patterns as payments arrive.
+3. A gradient-boosted model, scored through Snap ML (on the IBM Z AI accelerator when one is present), gives each payment a calibrated probability.
+4. A cost rule decides: release, hold for review, or ask the receiving bank to freeze.
+
+Each decision goes back only to the bank that owns the payment.
+
+The design doc is `freezeframe.pdf`, the build plan is `PLAN.md`, and what remains is in `todo.md`.
+
+## Results
+
+<!-- RESULTS -->
+
+### HI-Small: caught alone vs together (full features, xgb)
+
+Test split: 1,015,669 payments, 1,797 laundering. Five consortium members, banks dealt at random; each seed is a different deal.
+
+| | Minority-class F1 | Precision | Recall | Laundered $ stopped |
+|---|---|---|---|---|
+| **Together (enclave)** | **0.6304** | 0.915 | 0.481 | 99.7% |
+| Alone, seed 0 | 0.5612 | 0.740 | 0.452 | 99.7% |
+| Alone, seed 1 | 0.5349 | 0.814 | 0.398 | 99.7% |
+| Alone, seed 2 | 0.5799 | 0.804 | 0.454 | 99.7% |
+
+Pooling raises F1 from **0.5587** (mean alone, range 0.5349–0.5799) to **0.6304**. The published GFP + XGBoost baseline on HI-Small is 0.6323 (Blanuša et al.).
+
+Per member, seed 0 (same owned test payments in both columns):
+
+| Member | Banks | Test laundering | F1 alone | F1 together | Recall@0.5% alone | Recall@0.5% together |
+|---|---|---|---|---|---|---|
+| A | 6,160 | 359 | 0.3605 | 0.4195 | 0.401 | 0.418 |
+| B | 6,023 | 448 | 0.5930 | 0.6657 | 0.658 | 0.743 |
+| C | 6,218 | 313 | 0.6046 | 0.6653 | 0.658 | 0.719 |
+| D | 5,998 | 289 | 0.6208 | 0.6466 | 0.647 | 0.716 |
+| E | 6,129 | 388 | 0.6094 | 0.7118 | 0.665 | 0.732 |
+
+What the decision rule does on the test split (counts of payments):
+
+| | Laundering frozen | Legit frozen | Laundering stopped (hold or freeze) | Legit held |
+|---|---|---|---|---|
+| **Together** | 611 of 1797 | 12 | 1247 | 17,962 |
+| Alone, seed 0 | 389 of 1797 | 11 | 1217 | 18,225 |
+| Alone, seed 1 | 353 of 1797 | 4 | 1218 | 18,602 |
+| Alone, seed 2 | 344 of 1797 | 6 | 1232 | 17,259 |
+
+Laundered *dollars* stopped is about 99.7% in every arm: the hold rule (p × amount > $100) catches nearly all large laundering payments either way, so the dollar metric does not separate the arms. It also holds about 1.8% of all payments, more than a 0.5% review budget; tuning the review cost is in `todo.md`.
+
+Recall by laundering pattern (together, test split):
+
+| Pattern | Laundering payments | Recall |
+|---|---|---|
+| BIPARTITE | 74 | 0.541 |
+| CYCLE | 109 | 0.505 |
+| FAN-IN | 137 | 0.693 |
+| FAN-OUT | 140 | 0.743 |
+| GATHER-SCATTER | 401 | 0.698 |
+| RANDOM | 86 | 0.616 |
+| SCATTER-GATHER | 252 | 0.667 |
+| STACK | 140 | 0.486 |
+| (unpatterned) | 458 | 0.002 |
+
+Live-path (hot tier, no scatter-gather) model, together: F1 0.6515, laundered $ stopped 99.7%. It scores *higher* than the full tier, so on HI-Small with these windows scatter-gather adds no signal; the alone-vs-together comparison above was run on the full tier only.
+
+### Streaming latency: warm tier process (inprocess bus, x86_64, macOS)
+
+Scoring: `compress_trees` · enclave attestation: `simulated` · budget 50 ms p99 from scheduled arrival to published decision (includes a 5 ms bank-side batching linger).
+
+| Speed vs real time | Payments | Achieved / s | p50 ms | p95 ms | p99 ms | Mean micro-batch |
+|---|---|---|---|---|---|---|
+| 1× | 301 | 5 | 12.4 | 19.4 | 27.2 | 1.0 |
+| 100× | 24,344 | 539 | 11.0 | 16.2 | 20.9 | 3.5 |
+| 300× | 111,224 | 2,447 | 16.0 | 29.8 | 135.2 | 20.7 |
+| 1000× | 333,218 | 7,351 | 39.7 | 396.9 | 616.2 | 160.4 |
+
+Highest rate with p99 within budget: **539 payments/s**.
+
+### Streaming latency: warm tier off (inprocess bus, x86_64, macOS)
+
+Scoring: `compress_trees` · enclave attestation: `simulated` · budget 50 ms p99 from scheduled arrival to published decision (includes a 5 ms bank-side batching linger).
+
+| Speed vs real time | Payments | Achieved / s | p50 ms | p95 ms | p99 ms | Mean micro-batch |
+|---|---|---|---|---|---|---|
+| 1× | 301 | 5 | 12.5 | 19.2 | 23.7 | 1.0 |
+| 100× | 24,344 | 539 | 10.8 | 15.8 | 19.9 | 3.5 |
+| 300× | 111,224 | 2,448 | 14.1 | 22.8 | 47.8 | 18.3 |
+| 1000× | 333,218 | 7,353 | 25.3 | 242.8 | 515.1 | 99.1 |
+
+Highest rate with p99 within budget: **2,448 payments/s**.
+
+### Demo replay (demo/app.py)
+
+A real 8-payment CYCLE laundering attempt from the test split, crossing all five members, replayed through sealed bank clients with live background traffic around each hop. All 8 payments were held by the live hot path; one (hop 5) only because its money came from a flagged payment (watchlist, `upstream_flag`). In the experiment's predictions the pooled model stops all 8 hops; the members alone miss 3 of them.
+
+_Measured on the dev laptop (Apple M2, x86_64 Python under Rosetta) unless the heading says otherwise. Not yet measured on LinuxONE._
+
+<!-- /RESULTS -->
+
+## Quick start
+
+```bash
+# Apple Silicon: Snap ML needs an x86_64 Python under Rosetta (the script handles libomp)
+./scripts/setup_mac.sh
+PY="arch -x86_64 .venv/bin/python"          # on Linux: pip install -e '.[dev,xgb]'; PY=python
+
+# data (no Kaggle login needed)
+mkdir -p data && for f in HI-Small_Trans.csv HI-Small_Patterns.txt; do
+  curl -L -o data/$f https://www.kaggle.com/api/v1/datasets/download/ealtman2019/ibm-transactions-for-anti-money-laundering-aml/$f
+done
+
+$PY -m pytest                                # 22 tests (the Kafka test needs FF_KAFKA=host:port)
+./scripts/run_experiments.sh HI-Small        # alone vs together + live-path model (~1 h)
+$PY -m bench.latency --speeds 1 100 1000     # streaming latency
+$PY -m demo.app                              # http://localhost:8000, press Play
+```
+
+## How it works
+
+```
+bank client ──seal(payment, enclave key)──▶ payments.in  (one partition, time-ordered)
+                                                │
+                                   enclave/stream.py  HotConsumer (micro-batches)
+       ownership check → pseudonymise → GFP update (per timestamp) → booster → calibrate → decide
+                                                │                         ▲
+                     decisions.<bank>  sealed to that bank's key          │ watchlist
+                     notices.<bank>    freeze requests for its own accts  │
+                                                                 enclave/warm.py (every few s:
+                                                                 full patterns, escalations)
+```
+
+| Piece | File |
+|---|---|
+| CSV to typed parquet, USD rates from the data, time split, pattern labels | `freezeframe/ingest.py` |
+| HMAC pseudonyms (key stays in the enclave) | `freezeframe/pseudonym.py` |
+| Random bank-to-member assignment, views, owners | `freezeframe/consortium.py` |
+| Raw and GFP features, hub splitting, timestamp batching | `freezeframe/features.py` |
+| XGBoost trained, then imported into Snap ML for scoring (or Snap ML's own booster) | `freezeframe/model.py` |
+| Isotonic calibration; release / hold / freeze rule | `freezeframe/decide.py` |
+| Alone-vs-together experiment | `freezeframe/experiment.py` |
+| Enclave engine, warm tier, transports, HTTP API, crypto | `freezeframe/enclave/` |
+| Streaming latency benchmark | `bench/latency.py` |
+| Live demo dashboard | `demo/` |
+| LinuxONE steps, Dockerfile | `deploy/` |
+
+### Decisions
+
+- **Hold** when the expected laundered dollars (probability × amount) are more than the cost of a review ($100).
+- **Freeze** when the calibrated probability clears the threshold that gives 95% precision on the tune split. The receiving bank then gets a notice naming only *its own* account.
+- **Hold at hop 2.** When a payment is held or frozen, the receiving account is watched. The next payment *out* of that account is held, even if its own score is low.
+
+### Things we learned about the Graph Feature Preprocessor
+
+- `fit_transform` inserts each edge twice: once in `fit`, again in `transform`. This doubles every count, so we only call `transform`.
+- Within one `transform` call, every edge sees the whole batch, including later edges. We cut batches at timestamp boundaries, so the batch features and the live features are identical, with no look-ahead. `tests/test_features.py` checks this.
+- Two HI-Small accounts have more than 100k edges each, and they make pattern mining blow up: a full 5M-row run did not finish in 30 minutes. *Hub splitting* gives each edge of an account with more than 10k train edges its own vertex, and adds is-hub flags. With it, all patterns over 5M rows take about 90 s on a laptop.
+- The `*_tw` windows are not hard look-back bounds, so the enclave primes its graph from full history (see `todo.md` §7).
+
+## Honesty notes
+
+- Every number in this README comes from files in `results/` and names the machine it was measured on. None has been measured on LinuxONE yet (`todo.md` §1–2).
+- The enclave reports `attestation: simulated` unless it runs as an IBM Secure Execution guest (`todo.md` §3).
+- The data is IBM's synthetic AMLworld (Altman et al., 2023). No real customer data is used.

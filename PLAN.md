@@ -1,5 +1,7 @@
 # FreezeFrame implementation plan
 
+> **Status (2026-10-18):** phases 1–7 and 9 are built and tested on the dev laptop. Phase 8 (LinuxONE) and everything else that needs hardware, access or people is in `todo.md`. Results are in `results/` and `README.md`. Differences from this plan: hub splitting and per-timestamp GFP batching (see `CLAUDE.md`), priming from full history instead of a 48 h window, and XGBoost imported into Snap ML via `xgb_json` (no ONNX).
+
 This plan is taken from `freezeframe.pdf`. Each phase lists what it produces and how to tell it is done.
 
 ## Data (downloaded to `data/`, gitignored)

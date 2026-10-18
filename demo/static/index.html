@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreezeFrame</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #14181f; --muted: #5d6675; --line: #e3e6eb;
+  --release: #2f8f5b; --hold: #c98a12; --freeze: #c4373a; --pending: #a9b0bb; --accent: #2a5bd7;
+  --m0: #2a5bd7; --m1: #8a3ffc; --m2: #0f9d9a; --m3: #d15b9a; --m4: #6b7a2b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --panel: #171b21; --ink: #e8ebf0; --muted: #98a1ae; --line: #2a3039;
+    --release: #4cc184; --hold: #e6a93a; --freeze: #ef5b5e; --pending: #5b6370; --accent: #6d93ff;
+    --m0: #6d93ff; --m1: #b28cff; --m2: #3cc9c4; --m3: #ef8cc0; --m4: #a9b858;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 18px 24px;
+  border-bottom: 1px solid var(--line); background: var(--panel); }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 13px; }
+.badge { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+button { font: inherit; font-weight: 600; padding: 8px 18px; border-radius: 8px; border: 0;
+  background: var(--accent); color: #fff; cursor: pointer; margin-left: auto; }
+button:disabled { opacity: .5; cursor: default; }
+main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; padding: 16px 24px 32px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+h2 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.wide { grid-column: 1 / -1; }
+#chainSvg { width: 100%; height: auto; display: block; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; }
+.tablewrap { overflow-x: auto; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; }
+.release { background: var(--release); } .hold { background: var(--hold); } .freeze { background: var(--freeze); }
+.pending { background: var(--pending); }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.tile { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.tile .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile .k { font-size: 12px; color: var(--muted); }
+#notices { list-style: none; margin: 0; padding: 0; font-size: 13px; max-height: 220px; overflow: auto; }
+#notices li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+#bars { width: 100%; height: auto; display: block; }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header { padding: 14px 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>FreezeFrame</h1>
+    <div class="sub" id="subtitle">Cross-bank mule chain, replayed live through the shared enclave</div>
+  </div>
+  <span class="badge" id="attest">enclave: …</span>
+  <span class="badge" id="tree">scoring: …</span>
+  <button id="play" disabled>Loading…</button>
+</header>
+<main>
+  <section>
+    <h2>The chain</h2>
+    <div class="sub" id="status" style="margin:-6px 0 8px">Press Play to replay the chain.</div>
+    <svg id="chainSvg" viewBox="0 0 900 260" role="img" aria-label="Mule chain"></svg>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--pending)"></span>not yet sent</span>
+      <span><span class="sw" style="background:var(--release)"></span>released</span>
+      <span><span class="sw" style="background:var(--hold)"></span>held for review</span>
+      <span><span class="sw" style="background:var(--freeze)"></span>freeze requested</span>
+    </div>
+  </section>
+  <section>
+    <h2>Enclave, live</h2>
+    <div class="tiles">
+      <div class="tile"><div class="v" id="rate">–</div><div class="k">payments / s</div></div>
+      <div class="tile"><div class="v" id="p99">–</div><div class="k">p99 decision latency</div></div>
+      <div class="tile"><div class="v" id="p50">–</div><div class="k">p50 decision latency</div></div>
+      <div class="tile"><div class="v" id="total">–</div><div class="k">payments scored</div></div>
+      <div class="tile"><div class="v" id="holds">–</div><div class="k">held / frozen</div></div>
+      <div class="tile"><div class="v" id="upstream">–</div><div class="k">held at next hop / escalations</div></div>
+    </div>
+  </section>
+  <section class="wide">
+    <h2>Hop by hop</h2>
+    <div class="tablewrap"><table id="hops"><thead><tr>
+      <th>Hop</th><th>Time</th><th>From</th><th>To</th><th>Amount (USD)</th><th>Live decision</th><th>Why</th>
+      <th>Bank alone</th><th>Together</th></tr></thead><tbody></tbody></table></div>
+    <div class="note">"Bank alone" and "Together" come from the experiment's models on the same payment (seed 0). The live decision is the streaming hot path plus the warm tier.</div>
+  </section>
+  <section>
+    <h2>Caught alone vs together (test split)</h2>
+    <svg id="bars" viewBox="0 0 640 260" role="img" aria-label="F1 alone versus together"></svg>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--pending)"></span>each bank alone</span>
+      <span><span class="sw" style="background:var(--accent)"></span>together in the enclave</span>
+    </div>
+    <div class="note" id="barsNote"></div>
+  </section>
+  <section>
+    <h2>Notices to receiving banks</h2>
+    <ul id="notices"><li class="sub">None yet</li></ul>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const ACTION = ["release", "hold", "freeze"];
+const memberColor = (m) => `var(--m${m % 5})`;
+let chain = null;
+const live = {};
+
+function fmtUsd(v) { return v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : `$${Math.round(v).toLocaleString()}`; }
+function pill(a) { return a == null ? '<span class="pill pending">n/a</span>' : `<span class="pill ${a}">${a}</span>`; }
+
+function drawChain() {
+  const svg = $("chainSvg");
+  const accts = [];
+  chain.hops.forEach(h => { for (const [a, m] of [[h.from, h.from_member], [h.to, h.to_member]])
+    if (!accts.find(x => x.a === a)) accts.push({ a, m }); });
+  const W = 900, H = 260, pad = 60;
+  const step = accts.length > 1 ? (W - 2 * pad) / (accts.length - 1) : 0;
+  accts.forEach((n, i) => { n.x = pad + i * step; n.y = i % 2 ? 175 : 85; });
+  const pos = Object.fromEntries(accts.map(n => [n.a, n]));
+  let s = `<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>`;
+  chain.hops.forEach(h => {
+    const a = pos[h.from], b = pos[h.to];
+    const st = live[h.hop] ? live[h.hop].action : null;
+    const col = st ? `var(--${st})` : "var(--pending)";
+    if (a === b) {
+      s += `<path d="M${a.x - 10},${a.y - 22} C${a.x - 40},${a.y - 80} ${a.x + 40},${a.y - 80} ${a.x + 10},${a.y - 22}" fill="none" stroke="${col}" stroke-width="3" marker-end="url(#arr)"/>`;
+    } else {
+      const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy), ux = dx / L, uy = dy / L;
+      const off = (h.hop % 2 ? 1 : -1) * 10;
+      s += `<line x1="${a.x + ux * 24 - uy * off}" y1="${a.y + uy * 24 + ux * off}" x2="${b.x - ux * 26 - uy * off}" y2="${b.y - uy * 26 + ux * off}" stroke="${col}" stroke-width="3" marker-end="url(#arr)"/>`;
+      s += `<text x="${(a.x + b.x) / 2 - uy * (off + 12)}" y="${(a.y + b.y) / 2 + ux * (off + 12) + 4}" font-size="11" text-anchor="middle" fill="var(--muted)">${h.hop + 1}</text>`;
+    }
+  });
+  accts.forEach(n => {
+    s += `<circle cx="${n.x}" cy="${n.y}" r="20" fill="var(--panel)" stroke="${memberColor(n.m)}" stroke-width="4"/>`;
+    s += `<text x="${n.x}" y="${n.y + 4}" font-size="12" font-weight="700" text-anchor="middle" fill="var(--ink)">${n.a}</text>`;
+    s += `<text x="${n.x}" y="${n.y + (n.y < 130 ? -30 : 40)}" font-size="11" text-anchor="middle" fill="${memberColor(n.m)}">Bank ${"ABCDE"[n.m]}</text>`;
+  });
+  svg.innerHTML = s;
+}
+
+function drawHops() {
+  const tb = $("hops").querySelector("tbody");
+  tb.innerHTML = chain.hops.map(h => {
+    const l = live[h.hop];
+    return `<tr><td>${h.hop + 1}</td><td>${h.ts.slice(5, 16)}</td>
+      <td><span style="color:${memberColor(h.from_member)}">Bank ${"ABCDE"[h.from_member]}</span> ${h.from}</td>
+      <td><span style="color:${memberColor(h.to_member)}">Bank ${"ABCDE"[h.to_member]}</span> ${h.to}</td>
+      <td>${fmtUsd(h.amount_usd)}</td>
+      <td>${l ? pill(l.action) : '<span class="pill pending">waiting</span>'}</td>
+      <td class="sub">${l ? (l.reason === "upstream_flag" ? "money came from a flagged payment" : `p=${l.p.toFixed(3)}`) : ""}</td>
+      <td>${pill(h.alone == null ? null : ACTION[h.alone])}</td><td>${pill(h.together == null ? null : ACTION[h.together])}</td></tr>`;
+  }).join("");
+}
+
+function drawBars(r) {
+  if (!r.members || !r.members.length) { $("barsNote").textContent = "Run the experiment to fill this chart."; return; }
+  const rows = [...r.members.map(m => ({ k: `Bank ${"ABCDE"[m.member]}`, a: m.alone, t: m.together })),
+    { k: "All banks", a: r.alone_f1_by_seed["0"] ?? Object.values(r.alone_f1_by_seed)[0], t: r.together_f1 }];
+  const W = 640, H = 260, L = 40, B = 30, top = 10, bw = 22;
+  const gw = (W - L - 10) / rows.length;
+  const y = v => top + (1 - v) * (H - top - B);
+  let s = "";
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    s += `<line x1="${L}" x2="${W - 10}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>`;
+    s += `<text x="${L - 6}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${v.toFixed(2)}</text>`;
+  }
+  rows.forEach((r0, i) => {
+    const x = L + i * gw + gw / 2;
+    s += `<rect x="${x - bw - 2}" y="${y(r0.a)}" width="${bw}" height="${y(0) - y(r0.a)}" rx="3" fill="var(--pending)"><title>alone ${r0.a.toFixed(3)}</title></rect>`;
+    s += `<rect x="${x + 2}" y="${y(r0.t)}" width="${bw}" height="${y(0) - y(r0.t)}" rx="3" fill="var(--accent)"><title>together ${r0.t.toFixed(3)}</title></rect>`;
+    s += `<text x="${x}" y="${H - 10}" font-size="11" text-anchor="middle" fill="var(--ink)">${r0.k}</text>`;
+  });
+  s += `<text x="12" y="${top + 8}" font-size="11" fill="var(--muted)">F1</text>`;
+  $("bars").innerHTML = s;
+  const seeds = Object.values(r.alone_f1_by_seed);
+  $("barsNote").textContent = `Minority-class F1. Together ${r.together_f1.toFixed(3)} vs alone ${Math.min(...seeds).toFixed(3)}–${Math.max(...seeds).toFixed(3)} across ${seeds.length} random bank splits. Laundered dollars stopped: together ${(100 * r.together_usd).toFixed(1)}%, alone ${(100 * Math.min(...Object.values(r.alone_usd_by_seed))).toFixed(1)}–${(100 * Math.max(...Object.values(r.alone_usd_by_seed))).toFixed(1)}%.`;
+}
+
+async function init() {
+  chain = await (await fetch("/api/chain")).json();
+  $("attest").textContent = `enclave: ${chain.attestation}`;
+  $("tree").textContent = chain.tree_format === "zdnn_tensors" ? "scoring: IBM Z AI accelerator" : `scoring: CPU (${chain.tree_format})`;
+  $("subtitle").textContent = `Real ${chain.pattern.toLowerCase()} laundering attempt from the test split · ${chain.hops.length} payments · ${new Set(chain.hops.flatMap(h => [h.from_member, h.to_member])).size} banks · ${chain.span_hours.toFixed(1)} h of data time`;
+  drawChain(); drawHops();
+  drawBars(await (await fetch("/api/results")).json());
+  const btn = $("play"); btn.disabled = false; btn.textContent = "Play";
+  btn.onclick = async () => { btn.disabled = true; btn.textContent = "Playing…"; await fetch("/api/play", { method: "POST" }); };
+  const es = new EventSource("/api/stream");
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === "hop") { live[ev.hop] = ev; drawChain(); drawHops(); }
+    else if (ev.type === "notice") {
+      const ul = $("notices"); if (ul.querySelector(".sub")) ul.innerHTML = "";
+      ul.insertAdjacentHTML("afterbegin", `<li>${pill(ev.kind === "freeze_request" ? "freeze" : "hold")} Bank ${"ABCDE"[ev.member]}: ${ev.kind.replace("_", " ")} on its account …${ev.to_acct} (${fmtUsd(ev.amount_usd)})</li>`);
+    } else if (ev.type === "stats") {
+      $("rate").textContent = Math.round(ev.rate).toLocaleString();
+      $("p99").textContent = `${ev.p99.toFixed(1)} ms`; $("p50").textContent = `${ev.p50.toFixed(1)} ms`;
+      $("total").textContent = ev.payments.toLocaleString();
+      $("holds").textContent = `${ev.actions.hold} / ${ev.actions.freeze}`;
+      $("upstream").textContent = `${ev.upstream_holds} / ${ev.escalations}`;
+    } else if (ev.type === "skip") {
+      $("status").textContent = `Fast-forward: ${ev.hours.toFixed(1)} h of traffic (${ev.payments.toLocaleString()} payments) loaded into the graph, not shown.`;
+    } else if (ev.type === "live") {
+      $("status").textContent = `Live at ${ev.speed}× real time: the minutes before the payment at ${ev.hop_time.slice(5, 16)}.`;
+    } else if (ev.type === "done") { const b = $("play"); b.textContent = "Done"; $("status").textContent = "Replay finished."; }
+  };
+}
+init();
+</script>
+</body>
+</html>
